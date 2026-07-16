@@ -437,6 +437,53 @@ async def test_stream_text(allow_model_requests: None):
         assert result.usage.output_tokens == 5
 
 
+async def test_stream_settings_forwarded_without_tools(allow_model_requests: None):
+    """Model settings must be forwarded on the plain-text streaming path.
+
+    Not a VCR test: the cassette matchers aren't sensitive to these request body fields,
+    so only asserting the mocked request kwargs catches a regression here.
+    """
+    stream = [text_chunk('hello '), chunk([])]
+    mock_client = MockMistralAI.create_stream_mock(stream)
+    model = MistralModel('mistral-large-latest', provider=MistralProvider(mistral_client=mock_client))
+    agent = Agent(
+        model=model,
+        model_settings=MistralModelSettings(temperature=0.0, max_tokens=100, seed=42, stop_sequences=['STOP']),
+    )
+
+    async with agent.run_stream('hello') as result:
+        async for _ in result.stream_text(debounce_by=None):
+            pass
+
+    kwargs = get_mock_chat_completion_kwargs(mock_client)[0]
+    assert kwargs['temperature'] == 0.0
+    assert kwargs['max_tokens'] == 100
+    assert kwargs['random_seed'] == 42
+    assert kwargs['stop'] == ['STOP']
+
+
+async def test_stream_seed_forwarded_with_tools(allow_model_requests: None):
+    """`seed` must be forwarded as `random_seed` on the streaming path with tools.
+
+    Not a VCR test for the same reason as `test_stream_settings_forwarded_without_tools`.
+    """
+    stream = [text_chunk('done'), chunk([])]
+    mock_client = MockMistralAI.create_stream_mock(stream)
+    model = MistralModel('mistral-large-latest', provider=MistralProvider(mistral_client=mock_client))
+    agent = Agent(model=model, model_settings=MistralModelSettings(seed=42))
+
+    @agent.tool_plain
+    def get_location(loc: str) -> str:
+        return loc  # pragma: no cover
+
+    async with agent.run_stream('hello') as result:
+        async for _ in result.stream_text(debounce_by=None):
+            pass
+
+    kwargs = get_mock_chat_completion_kwargs(mock_client)[0]
+    assert kwargs['random_seed'] == 42
+
+
 async def test_stream_usage_with_cached_tokens(allow_model_requests: None):
     stream = [
         MistralCompletionEvent(
